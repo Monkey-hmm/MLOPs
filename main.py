@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import List
 import uvicorn
 
-app = FastAPI()
+app = FastAPI(root_path="/temp")
 
 # In-memory storage
 queue: List[dict] = []
@@ -87,7 +87,7 @@ def add_result(item: Item):
     return {"message": "Item added to results", "item": item}
 
 def main():
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
 
 if __name__ == "__main__":
     main()
