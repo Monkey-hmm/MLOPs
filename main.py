@@ -4,6 +4,8 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, Form, File, HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from typing import List, Optional
 from dotenv import load_dotenv
 
@@ -96,7 +98,7 @@ async def add_result(result: ResultRequest):
     
     return ResultResponse(ok=success, job_id=result.job_id)
 
-@app.get("/", response_model=DashboardResponse)
+@app.get("/api/dashboard", response_model=DashboardResponse)
 async def get_dashboard():
     try:
         data = await db.get_dashboard_data()
@@ -104,6 +106,14 @@ async def get_dashboard():
     except Exception as e:
         logger.error(f"DB dashboard error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load dashboard")
+
+# Serve React static assets
+app.mount("/assets", StaticFiles(directory="UI/dist/assets"), name="assets")
+
+# Serve React App on the root endpoint
+@app.get("/")
+async def serve_react_app():
+    return FileResponse("UI/dist/index.html")
 
 def main():
     import uvicorn
