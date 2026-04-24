@@ -1,92 +1,112 @@
-"""
-create a simple api which creates a in mem que of ints and a arr of result
-/->basic web UI displaying queue and results
-/digest -> pop k element and return them
-/append -> push a item to que {number,id} here id is for the user who want to add this number
-/result -> push the {number,id} into reult
-"""
+import os
+import uuid
+import logging
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, UploadFile, Form, File, HTTPException, Query
+from typing import List, Optional
+from dotenv import load_dotenv
 
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from typing import List
-import uvicorn
+load_dotenv()
 
-app = FastAPI(root_path="/temp")
+from db import db
+from models import (
+    AppendResponse,
+    DigestItem,
+    ResultRequest,
+    ResultResponse,
+    DashboardResponse
+)
+from Storage.BucketHandler import BucketHandler, BucketHandlerError
 
-# In-memory storage
-queue: List[dict] = []
-results: List[dict] = []
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-class Item(BaseModel):
-    number: int
-    id: str
+bucket_handler = None
 
-@app.get("/", response_class=HTMLResponse)
-def read_root():
-    html_content = f"""
-    <html>
-        <head>
-            <title>Queue and Results UI</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 2rem; background: #f4f4f9; color: #333; }}
-                h1 {{ text-align: center; color: #4a4e69; }}
-                .container {{ display: flex; gap: 2rem; max-width: 800px; margin: 0 auto; }}
-                .box {{ flex: 1; background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); height: 400px; overflow-y: auto; }}
-                h2 {{ margin-top: 0; color: #22223b; border-bottom: 2px solid #f2e9e4; padding-bottom: 0.5rem; }}
-                ul {{ list-style-type: none; padding: 0; }}
-                li {{ background: #f8f9fa; margin-bottom: 0.5rem; padding: 0.75rem; border-radius: 4px; border-left: 4px solid #4a4e69; }}
-                .meta {{ font-size: 0.85em; color: #6c757d; }}
-                .number {{ font-weight: bold; font-size: 1.1em; }}
-            </style>
-        </head>
-        <body>
-            <h1>Queue & Results Dashboard</h1>
-            <div class="container">
-                <div class="box">
-                    <h2>Queue ({len(queue)})</h2>
-                    <ul>
-                        {''.join(f"<li><div class='number'>Number: {item['number']}</div><div class='meta'>ID: {item['id']}</div></li>" for item in queue)}
-                        { '<li>No items in queue.</li>' if not queue else '' }
-                    </ul>
-                </div>
-                <div class="box">
-                    <h2>Results ({len(results)})</h2>
-                    <ul>
-                        {''.join(f"<li><div class='number'>Number: {item['number']}</div><div class='meta'>ID: {item['id']}</div></li>" for item in results)}
-                        { '<li>No items in results.</li>' if not results else '' }
-                    </ul>
-                </div>
-            </div>
-            <script>
-                // Auto-refresh every 2 seconds to see updates live
-                setTimeout(() => location.reload(), 2000);
-            </script>
-        </body>
-    </html>
-    """
-    return html_content
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Setup
+    global bucket_handler
+    try:
+        bucket_handler = BucketHandler()
+    except BucketHandlerError as e:
+        logger.error(f"Failed to initialize BucketHandler: {e}")
+        raise RuntimeError("MinIO not configured correctly")
+    
+    await db.connect()
+    yield
+    # Teardown
+    await db.disconnect()
 
-@app.get("/digest")
-def digest_items(k: int = Query(1, description="Number of elements to pop")):
-    popped = []
-    # Pop up to k elements from the front of the queue
-    for _ in range(min(k, len(queue))):
-        if queue:
-            popped.append(queue.pop(0))
-    return {"popped": popped}
+app = FastAPI(lifespan=lifespan)
 
-@app.post("/append")
-def append_item(item: Item):
-    queue.append(item.model_dump())
-    return {"message": "Item appended to queue", "item": item}
+@app.post("/append", response_model=AppendResponse)
+async def append_item(
+    team_id: str = Form(...),
+    image: UploadFile = File(...)
+):
+    try:
+        # Upload to MinIO
+        contents = await image.read()
+        image_url = await asyncio.to_thread(
+            bucket_handler.upload_bytes,
+            contents, 
+            image.filename, 
+            image.content_type
+        )
+    except BucketHandlerError as e:
+        logger.error(f"MinIO upload error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload image")
 
-@app.post("/result")
-def add_result(item: Item):
-    results.append(item.model_dump())
-    return {"message": "Item added to results", "item": item}
+    # Insert into DB
+    try:
+        job_id_str = await db.enqueue_job(team_id=team_id, image_url=image_url)
+        job_id = uuid.UUID(job_id_str)
+    except Exception as e:
+        logger.error(f"DB enqueue error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    return AppendResponse(job_id=job_id)
+
+@app.get("/digest", response_model=List[DigestItem])
+async def digest_items(k: int = Query(10, gt=0)):
+    try:
+        jobs = await db.digest_jobs(k=k)
+        return [
+            DigestItem(job_id=uuid.UUID(str(job["job_id"])), image_url=job["image_url"], team_id=job["team_id"])
+            for job in jobs
+        ]
+    except Exception as e:
+        logger.error(f"DB digest error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to digest jobs")
+
+@app.post("/result", response_model=ResultResponse)
+async def add_result(result: ResultRequest):
+    try:
+        # asyncpg handles the updates
+        success = await db.add_result(
+            job_id=str(result.job_id), 
+            prediction=result.prediction.value, 
+            confidence=result.confidence
+        )
+    except Exception as e:
+        logger.error(f"DB add result error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save result")
+    
+    return ResultResponse(ok=success, job_id=result.job_id)
+
+@app.get("/", response_model=DashboardResponse)
+async def get_dashboard():
+    try:
+        data = await db.get_dashboard_data()
+        return DashboardResponse(**data)
+    except Exception as e:
+        logger.error(f"DB dashboard error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load dashboard")
 
 def main():
+    import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
 
 if __name__ == "__main__":
