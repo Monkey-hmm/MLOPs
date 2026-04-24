@@ -91,6 +91,7 @@ async def add_result(result: ResultRequest):
 
     return ResultResponse(ok=success, job_id=result.job_id)
 
+@app.get("/", response_model=DashboardResponse)
 @app.get("/api/dashboard", response_model=DashboardResponse)
 async def get_dashboard():
     try:
