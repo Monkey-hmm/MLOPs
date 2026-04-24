@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     # Teardown
     await db.disconnect()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, root_path="/temp")
 
 @app.post("/append", response_model=AppendResponse)
 async def append_item(
