@@ -108,7 +108,7 @@ async def get_dashboard():
         raise HTTPException(status_code=500, detail="Failed to load dashboard")
 
 # Serve React static assets
-app.mount("/assets", StaticFiles(directory="UI/dist/assets"), name="assets")
+app.mount("/temp/assets", StaticFiles(directory="UI/dist/assets"), name="assets")
 
 # Serve React App on the root endpoint
 @app.get("/")
