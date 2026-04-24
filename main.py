@@ -28,7 +28,6 @@ bucket_handler = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Setup
     global bucket_handler
     try:
         bucket_handler = BucketHandler()
@@ -38,10 +37,9 @@ async def lifespan(app: FastAPI):
     
     await db.connect()
     yield
-    # Teardown
     await db.disconnect()
 
-app = FastAPI(lifespan=lifespan, root_path="/temp")
+app = FastAPI(lifespan=lifespan)
 
 @app.post("/append", response_model=AppendResponse)
 async def append_item(
@@ -49,7 +47,6 @@ async def append_item(
     image: UploadFile = File(...)
 ):
     try:
-        # Upload to MinIO
         contents = await image.read()
         image_url = await asyncio.to_thread(
             bucket_handler.upload_bytes,
@@ -61,7 +58,6 @@ async def append_item(
         logger.error(f"MinIO upload error: {e}")
         raise HTTPException(status_code=500, detail="Failed to upload image")
 
-    # Insert into DB
     try:
         job_id_str = await db.enqueue_job(team_id=team_id, image_url=image_url)
         job_id = uuid.UUID(job_id_str)
@@ -86,7 +82,6 @@ async def digest_items(k: int = Query(10, gt=0)):
 @app.post("/result", response_model=ResultResponse)
 async def add_result(result: ResultRequest):
     try:
-        # asyncpg handles the updates
         success = await db.add_result(
             job_id=str(result.job_id), 
             prediction=result.prediction.value, 
@@ -108,7 +103,7 @@ async def get_dashboard():
         raise HTTPException(status_code=500, detail="Failed to load dashboard")
 
 # Serve React static assets
-app.mount("/temp/assets", StaticFiles(directory="UI/dist/assets"), name="assets")
+app.mount("/assets", StaticFiles(directory="UI/dist/assets"), name="assets")
 
 # Serve React App on the root endpoint
 @app.get("/")
