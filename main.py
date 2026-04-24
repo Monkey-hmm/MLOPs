@@ -4,7 +4,6 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, Form, File, HTTPException, Query
-
 from typing import List, Optional
 from dotenv import load_dotenv
 
@@ -38,7 +37,7 @@ async def lifespan(app: FastAPI):
     yield
     await db.disconnect()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, root_path="/temp")
 
 @app.post("/append", response_model=AppendResponse)
 async def append_item(
@@ -49,8 +48,8 @@ async def append_item(
         contents = await image.read()
         image_url = await asyncio.to_thread(
             bucket_handler.upload_bytes,
-            contents, 
-            image.filename, 
+            contents,
+            image.filename,
             image.content_type
         )
     except BucketHandlerError as e:
@@ -82,14 +81,14 @@ async def digest_items(k: int = Query(10, gt=0)):
 async def add_result(result: ResultRequest):
     try:
         success = await db.add_result(
-            job_id=str(result.job_id), 
-            prediction=result.prediction.value, 
+            job_id=str(result.job_id),
+            prediction=result.prediction.value,
             confidence=result.confidence
         )
     except Exception as e:
         logger.error(f"DB add result error: {e}")
         raise HTTPException(status_code=500, detail="Failed to save result")
-    
+
     return ResultResponse(ok=success, job_id=result.job_id)
 
 @app.get("/api/dashboard", response_model=DashboardResponse)
@@ -100,7 +99,6 @@ async def get_dashboard():
     except Exception as e:
         logger.error(f"DB dashboard error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load dashboard")
-
 
 def main():
     import uvicorn
